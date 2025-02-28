@@ -1,37 +1,57 @@
+FROM --platform=$BUILDPLATFORM tonistiigi/xx AS xx
+
 # Build container
-FROM golang:1.22 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS builder
+COPY --from=xx / /
+ARG TARGETPLATFORM
 
-RUN go version
+ENV CGO_ENABLED=1
 
-RUN apt-get update && apt-get upgrade -y && apt-get install -y ca-certificates git zlib1g-dev
+RUN xx-apk add --no-cache ca-certificates git zlib-dev musl-dev gcc
 
-COPY . /go/src/github.com/TicketsBot/worker
-WORKDIR /go/src/github.com/TicketsBot/worker
+WORKDIR /build
 
-RUN git submodule update --init --recursive --remote
+COPY go.mod go.sum ./
 
-RUN set -Eeux && \
-    go mod download && \
-    go mod verify
+RUN xx-go mod download
 
-RUN GOOS=linux GOARCH=amd64 \
-    go build \
+COPY . .
+
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg \
+    xx-go build \
     -tags=jsoniter \
     -trimpath \
+    -v \
     -o main cmd/worker/main.go
 
+# verify with xx
+RUN xx-verify /build/main
+
 # Prod container
-FROM ubuntu:latest
+FROM alpine
 
-RUN apt-get update && apt-get upgrade -y && apt-get install -y ca-certificates curl
+RUN apk add --no-cache ca-certificates curl shadow
 
-COPY --from=builder /go/src/github.com/TicketsBot/worker/locale /srv/worker/locale
-COPY --from=builder /go/src/github.com/TicketsBot/worker/main /srv/worker/main
-
-RUN chmod +x /srv/worker/main
+COPY --from=builder /build/locale /srv/worker/locale
+COPY --from=builder /build/main /srv/worker/main
 
 RUN useradd -m container
 USER container
+
 WORKDIR /srv/worker
 
-CMD ["/srv/worker/main"]
+ENTRYPOINT ["/srv/worker/main"]
+
+#RUN apt-get update && apt-get upgrade -y && apt-get install -y ca-certificates curl
+#
+#COPY --from=builder /go/src/github.com/TicketsBot/worker/locale /srv/worker/locale
+#COPY --from=builder /go/src/github.com/TicketsBot/worker/main /srv/worker/main
+#
+#RUN chmod +x /srv/worker/main
+#
+#RUN useradd -m container
+#USER container
+#WORKDIR /srv/worker
+#
+#CMD ["/srv/worker/main"]
